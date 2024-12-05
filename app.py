@@ -83,7 +83,7 @@ class CustomStyledPDF(FPDF):
 
 
 # Função para gerar o PDF detalhado
-def generate_detailed_pdf(data, summary, team_name, period, extras):
+def generate_detailed_pdf(data, summary, team_name, period, extras, back_charge):
     pdf = CustomStyledPDF()
     pdf.set_team_and_period(team_name, period)
     pdf.add_page()
@@ -115,19 +115,33 @@ def generate_detailed_pdf(data, summary, team_name, period, extras):
     ]
     pdf.add_table("Details", detail_headers, detail_rows)
 
-    if extras:
+    # Exibir Extras e Back Charge
+    if extras or back_charge > 0:
         pdf.ln(10)
         pdf.set_font("Arial", "B", 12)
-        pdf.cell(0, 10, "Extras", ln=True, align="L")
+        pdf.cell(0, 10, "Extras e Back Charges", ln=True, align="L")
         pdf.set_font("Arial", "", 10)
+
+        # Listar extras, se existirem
         for extra in extras:
             pdf.cell(
                 0,
                 10,
-                f"{extra['name']} - ${extra['value']:.2f} on {extra['date']}",
+                f"Extra: {extra['name']} - ${extra['value']:.2f} on {extra['date']}",
                 ln=True,
                 align="L",
             )
+
+        # Exibir Back Charge, se aplicado
+        if back_charge > 0:
+            pdf.cell(
+                0,
+                10,
+                f"Back Charge aplicado: -${back_charge:.2f}",
+                ln=True,
+                align="L",
+            )
+
 
     return pdf.output(dest="S").encode("latin1")
 
@@ -138,7 +152,7 @@ def homepage():
 
     # Logotipo centralizado com `st.image`
     st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
-    st.image("logo.png", width=150)  # Substitua o caminho, se necessário
+    st.image("/Users/johnnygarbim/Desktop/Sistema/logo.png", width=150)  # Substitua o caminho, se necessário
     st.markdown("</div>", unsafe_allow_html=True)
 
     # Texto centralizado
@@ -153,32 +167,31 @@ def homepage():
         """,
         unsafe_allow_html=True,
     )
-    # Botões para acessar diferentes abas
-    if st.button("Ir para Fechamento Semanal"):
-        st.session_state.page = "fechamento_semanal"
-    if st.button("Ir para Relatório Semanal Geral"):
-        st.session_state.page = "relatorio_semanal_geral"
 
+    # Botões lado a lado usando colunas
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Ir para Fechamento Semanal"):
+            st.session_state.page = "fechamento_semanal"
+
+    with col2:
+        if st.button("Ir para Relatório Semanal Geral"):
+            st.session_state.page = "relatorio_semanal_geral"
 
 # Função para o Fechamento Semanal
 def fechamento_semanal():
+
+
     st.title("Fechamento Semanal")
     st.markdown("### Gerador de relatórios de pagamento semanal")
 
     # Adicionando uma chave única ao file_uploader
     uploaded_file = st.file_uploader("Upload your Excel file", type=["xls", "xlsx", "xlsm"],
                                      key="fechamento_semanal_file")
+
     if uploaded_file:
         df = pd.read_excel(uploaded_file, header=1)
-        st.markdown(
-            """
-            <div style='text-align: center; margin-top: -20px;'>
-                <h1>PM Home Remodeling System</h1>
-                <p style='font-size: 18px; color: #6c757d;'>Sistema de Relatórios de Pagamento Semanal</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
         st.title("Weekly Payment Report Generator")
 
@@ -192,10 +205,7 @@ def fechamento_semanal():
             "PM8": 0.20,
         }
 
-        uploaded_file = st.file_uploader("Upload your Excel file", type=["xls", "xlsx", "xlsm"])
-
         if uploaded_file:
-            df = pd.read_excel(uploaded_file, header=1)
             df.columns = [col.strip().lower() for col in df.columns]
 
             if "unnamed: 8" in df.columns:
@@ -236,6 +246,7 @@ def fechamento_semanal():
 
             edited_data = []
             extras_data = {}
+            back_charges = {}
 
             for tab, installer in zip(tabs, installers):
                 with tab:
@@ -304,10 +315,20 @@ def fechamento_semanal():
                                 "date": extra_date,
                             }
                         )
-
                     extras_data[installer] = extras
+
+                    # Adicionar Back Charge
+                    back_charge = st.number_input(
+                        f"Back Charge para {installer} (subtração do total semanal):",
+                        min_value=0.0,
+                        step=0.01,
+                        key=f"{installer}_back_charge",
+                    )
+                    back_charges[installer] = back_charge
+
                     edited_data.append(installer_data)
 
+            # Gerar relatórios para cada instalador
             for installer_data in edited_data:
                 installer = installer_data["installer"].iloc[0]
                 total_prices_after_percent = installer_data["prices after %"].sum()
@@ -315,7 +336,8 @@ def fechamento_semanal():
                 discount = team_discounts.get(installer, 0.0)
                 extras = extras_data.get(installer, [])
                 extra_total = sum(extra["value"] for extra in extras)
-                final_total = total_prices_after_percent + extra_total
+                back_charge = back_charges.get(installer, 0.0)
+                final_total = total_prices_after_percent + extra_total - back_charge
 
                 summary = [{
                     "ID": installer,
@@ -326,14 +348,23 @@ def fechamento_semanal():
                     "Phone Number": "(000) 000-0000",
                     "TOTAL after %": final_total
                 }]
-                pdf_content = generate_detailed_pdf(installer_data.to_dict(orient="records"), summary,
-                                                    f"Installer {installer}", next_friday, extras)
+                pdf_content = generate_detailed_pdf(
+                    installer_data.to_dict(orient="records"),
+                    summary,
+                    f"Installer {installer}",
+                    next_friday,
+                    extras,
+                    back_charge
+                )
+
+                # Adicionar botão para baixar o relatório
                 st.download_button(
                     label=f"Download Report for {installer}",
                     data=pdf_content,
                     file_name=f"{installer}_Report_{next_friday}.pdf",
                     mime="application/pdf"
                 )
+
     if st.button("Voltar para a Página Inicial"):
         st.session_state.page = "homepage"
 
