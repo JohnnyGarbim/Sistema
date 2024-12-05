@@ -152,7 +152,7 @@ def homepage():
 
     # Logotipo centralizado com `st.image`
     st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
-    st.image("/Users/johnnygarbim/Desktop/Sistema/logo.png", width=150)  # Substitua o caminho, se necessário
+    st.image("logo.png", width=150)  # Substitua o caminho, se necessário
     st.markdown("</div>", unsafe_allow_html=True)
 
     # Texto centralizado
