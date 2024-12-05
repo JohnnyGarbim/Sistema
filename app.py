@@ -152,7 +152,7 @@ def homepage():
 
     # Logotipo centralizado com `st.image`
     st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
-    st.image("logo.png", width=150)  # Substitua o caminho, se necessário
+    st.image("/Users/johnnygarbim/Desktop/Sistema/logo.png", width=150)  # Substitua o caminho, se necessário
     st.markdown("</div>", unsafe_allow_html=True)
 
     # Texto centralizado
@@ -169,15 +169,19 @@ def homepage():
     )
 
     # Botões lado a lado usando colunas
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
-        if st.button("Ir para Fechamento Semanal"):
+        if st.button("Fechamento Semanal"):
             st.session_state.page = "fechamento_semanal"
 
     with col2:
-        if st.button("Ir para Relatório Semanal Geral"):
+        if st.button("Relatório Semanal Geral"):
             st.session_state.page = "relatorio_semanal_geral"
+
+    with col3:
+        if st.button("Labor Bill"):
+            st.session_state.page = "Labor Bill"
 
 # Função para o Fechamento Semanal
 def fechamento_semanal():
@@ -383,6 +387,15 @@ def relatorio_semanal_geral():
         st.dataframe(df)
         st.markdown("### Aqui estará o processamento específico do Relatório Geral...")
 
+    if st.button("### Voltar para a Página Inicial"):
+        st.session_state.page = "homepage"
+
+
+# Função para o Labor Bill
+def LaborBill():
+    st.title("Labor Bill")
+    st.markdown("ATLANTA Labor Bill")
+
     if st.button("Voltar para a Página Inicial"):
         st.session_state.page = "homepage"
 
@@ -401,3 +414,5 @@ elif st.session_state.page == "fechamento_semanal":
     fechamento_semanal()
 elif st.session_state.page == "relatorio_semanal_geral":
     relatorio_semanal_geral()
+elif st.session_state.page == "Labor Bill":
+    LaborBill()
