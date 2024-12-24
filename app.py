@@ -1,8 +1,116 @@
 import streamlit as st
+import sqlite3
 import pandas as pd
 from fpdf import FPDF
 from datetime import datetime, timedelta
 
+
+# Conexão com o banco de dados
+def get_connection():
+    conn = sqlite3.connect("fechamento_semanal.db")
+    return conn
+
+
+# Função para criar tabelas (executa uma vez)
+def create_tables():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS fechamento_semanal (
+        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+        Installer TEXT NOT NULL,
+        Customer_name TEXT NOT NULL,
+        Job_number TEXT NOT NULL,
+        Labor_REAL NOT NULL,
+        Expenses REAL NOT NULL,
+        Pay_date TEXT NOT NULL,
+        Job_date TEXT NOT NULL,
+        Prices_after_percent REAL NOT NULL,
+        Discount REAL NOT NULL,
+        Extras_details TEXT,
+        Back_charge REAL NOT NULL
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS extras (
+        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+        Installer TEXT NOT NULL,
+        Extra_name TEXT NOT NULL,
+        Extra_value REAL NOT NULL,
+        Extra_date TEXT NOT NULL
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS back_charges (
+        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+        Installer TEXT NOT NULL,
+        Back_charge value REAL NOT NULL,
+        reason TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS summary (
+        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+        Installer TEXT NOT NULL,
+        Total_labor REAL NOT NULL,
+        Total_expenses REAL NOT NULL,
+        Total_extras REAL NOT NULL,
+        Total_back_charges REAL NOT NULL,
+        Total_price REAL NOT NULL,
+        Report date TEXT NOT NULL
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+
+# Função para inserir dados no banco
+def insert_data(table, data):
+    conn = get_connection()
+    cursor = conn.cursor()
+    placeholders = ', '.join(['?'] * len(data))
+    cursor.execute(f"INSERT INTO {table} VALUES (NULL, {placeholders})", tuple(data))
+    conn.commit()
+    conn.close()
+
+
+# Função para consultar dados do banco
+def query_data(query, params=()):
+    conn = get_connection()
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+    return df
+
+# Função para salvar os dados no banco
+def save_to_database(data):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Converta colunas de datas para strings compatíveis com SQLite
+    if "pay_date" in data.columns:
+        data["pay_date"] = data["pay_date"].dt.strftime('%Y-%m-%d')
+    if "job_date" in data.columns:
+        data["job_date"] = data["job_date"].dt.strftime('%Y-%m-%d')
+
+    for _, row in data.iterrows():
+        cursor.execute("""
+        INSERT INTO fechamento_semanal (
+            installer, customer_name, job_number, labor, expenses, pay_date, 
+            job_date, prices_after_percent, discount, extras_details, back_charge
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            row["installer"], row["customer name"], row["job number"], row["labor"], row["expenses"],
+            row["pay_date"], row["job_date"], row["prices_after_percent"], row["discount"],
+            row.get("extras_details", ""), row["back_charge"]
+        ))
+    conn.commit()
+    conn.close()
+# Inicializa o banco de dados
+create_tables()
 
 # Função para adicionar estilo personalizado
 def add_custom_style():
@@ -141,7 +249,6 @@ def generate_detailed_pdf(data, summary, team_name, period, extras, back_charge)
                 ln=True,
                 align="L",
             )
-
 
     return pdf.output(dest="S").encode("latin1")
 
@@ -368,6 +475,72 @@ def fechamento_semanal():
                     file_name=f"{installer}_Report_{next_friday}.pdf",
                     mime="application/pdf"
                 )
+
+    if uploaded_file:
+        df = pd.read_excel(uploaded_file, header=1)
+        df.columns = [col.strip().lower() for col in df.columns]
+
+        # Renomear colunas conforme necessário
+        df.rename(columns={
+            "unnamed: 8": "customer name",
+            "job #": "job number",
+            "date": "job_date",
+            "Pay Date": "pay_date",
+            "pay date": "pay_date",
+            "Data de Pagamento": "pay_date"
+        }, inplace=True)
+
+        # Verificar se a coluna 'pay_date' está presente
+        if "pay_date" not in df.columns:
+            st.error("A coluna 'Pay Date' não foi encontrada no arquivo Excel. Verifique os dados.")
+            st.stop()
+
+        # Convertendo 'pay_date' para datetime
+        df["pay_date"] = pd.to_datetime(df["pay_date"], errors="coerce")
+        if df["pay_date"].isna().all():
+            st.error("Nenhuma data válida foi encontrada na coluna 'Pay Date'. Verifique os dados.")
+            st.stop()
+
+        # Filtrar dados editáveis
+        df = df.dropna(subset=["customer name"])
+        df["pay_date"] = pd.to_datetime(df["pay_date"], errors="coerce")
+
+        # Determinar a última semana no campo "Pay Date"
+        last_week_date = df["pay_date"].max()
+        filtered_df = df[df["pay_date"] == last_week_date]
+
+        # Adicionar edição dos valores
+        edited_data = []
+        for idx, row in filtered_df.iterrows():
+            col1, col2 = st.columns(2)
+            with col1:
+                labor = st.number_input(f"Labor para {row['customer name']}", value=row["labor"], key=f"labor_{idx}")
+            with col2:
+                expenses = st.number_input(f"Despesas para {row['customer name']}", value=row.get("expenses", 0.0),
+                                            key=f"expenses_{idx}")
+
+            row["labor"] = labor
+            row["expenses"] = expenses
+            row["prices_after_percent"] = labor - expenses  # Exemplo de cálculo
+            edited_data.append(row)
+
+        # Converta os dados editados para um DataFrame
+        edited_df = pd.DataFrame(edited_data)
+
+        # Verifica se a coluna 'discount' está presente; se não, adiciona com valor padrão 0.0
+        if "discount" not in edited_df.columns:
+            edited_df["discount"] = 0.0
+
+        if "back_charge" not in edited_df.columns:
+            edited_df["back_charge"] = 0.0
+
+        st.write("### Dados Editados da Última Semana:")
+        st.dataframe(edited_df)
+
+        # Salvar dados no banco de dados
+        if st.button("Salvar no Banco de Dados"):
+            save_to_database(edited_df)
+            st.success(f"Dados da última semana ({last_week_date.strftime('%Y-%m-%d')}) salvos no banco de dados com sucesso!")
 
     if st.button("Voltar para a Página Inicial"):
         st.session_state.page = "homepage"
