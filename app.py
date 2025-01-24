@@ -1,4 +1,8 @@
+
 import streamlit as st
+import io
+import re
+import pdfplumber
 import sqlite3
 import pandas as pd
 from fpdf import FPDF
@@ -547,21 +551,191 @@ def fechamento_semanal():
 
 
 # Função para o Relatório Semanal Geral
+def extract_table_with_column(pdf_data, column_name):
+    """
+    Extrai a tabela que contém uma coluna específica do PDF.
+    """
+    try:
+        pdf_stream = io.BytesIO(pdf_data)
+        with pdfplumber.open(pdf_stream) as pdf:
+            for page in pdf.pages:
+                tables = page.extract_tables()
+                if tables:
+                    for table in tables:
+                        # Verificar se a tabela contém a coluna desejada
+                        if column_name in table[0]:  # Verifica se o cabeçalho contém a coluna
+                            df = pd.DataFrame(table[1:], columns=table[0])
+                            return df
+        return None
+    except Exception as e:
+        st.error(f"Erro ao tentar extrair a tabela com a coluna '{column_name}': {e}")
+        return None
+
+
+def calculate_totals(labor_df, total_after_df, is_pm0=False):
+    """
+    Soma os valores das colunas 'Labor' e 'TOTAL after %' e calcula o lucro.
+    Se o arquivo for 'PM0', o lucro é igual ao TOTAL after %.
+    """
+    try:
+        # Limpar e converter colunas para números
+        labor_df["Labor"] = labor_df["Labor"].str.replace("$", "").str.replace(",", "").astype(float)
+        total_after_df["TOTAL after %"] = total_after_df["TOTAL after %"].str.replace("$", "").str.replace(",", "").astype(float)
+
+        # Somar os valores das colunas
+        total_labor = labor_df["Labor"].sum()
+        total_after = total_after_df["TOTAL after %"].sum()
+
+        # Calcular o lucro
+        lucro = total_after if is_pm0 else total_labor - total_after
+
+        return total_labor, total_after, lucro
+    except Exception as e:
+        st.error(f"Erro ao calcular os totais: {e}")
+        return 0, 0, 0
+
+
+class PDFReport(FPDF):
+    def header(self):
+        self.set_font("Arial", "B", 12)
+        title = f"Relatório da Semana - {datetime.now().strftime('%d/%m/%Y')}"
+        self.cell(0, 10, title, align="C", ln=True)
+        self.ln(10)
+
+    def add_table(self, headers, rows):
+        """
+        Adiciona uma tabela ao PDF.
+        """
+        self.set_font("Arial", "B", 10)
+        col_widths = [40, 40, 40, 40]  # Ajuste os tamanhos das colunas conforme necessário
+        for header, width in zip(headers, col_widths):
+            self.cell(width, 10, header, border=1, align="C")
+        self.ln()
+
+        self.set_font("Arial", "", 10)
+        for row in rows:
+            for value, width in zip(row, col_widths):
+                self.cell(width, 10, str(value), border=1, align="C")
+            self.ln()
+
+    def add_totals(self, totals):
+        """
+        Adiciona a tabela de totais ao PDF.
+        """
+        self.ln(10)
+        self.set_font("Arial", "B", 10)
+        self.cell(0, 10, "Totais Gerais", align="C", ln=True)
+        self.ln(5)
+
+        col_widths = [60, 60]
+        self.set_font("Arial", "B", 10)
+        for header, width in zip(["Categoria", "Total"], col_widths):
+            self.cell(width, 10, header, border=1, align="C")
+        self.ln()
+
+        self.set_font("Arial", "", 10)
+        for row in totals:
+            for value, width in zip(row, col_widths):
+                self.cell(width, 10, str(value), border=1, align="C")
+            self.ln()
+
+
 def relatorio_semanal_geral():
     st.title("Relatório Semanal Geral")
     st.markdown("### Gerador de relatórios gerais da semana")
 
-    # Adicione aqui o código para o relatório geral
-    uploaded_file = st.file_uploader("Upload your Excel file", type=["xls", "xlsx", "xlsm"],
-                                     key="relatorio_semanal_file")
-    if uploaded_file:
-        df = pd.read_excel(uploaded_file, header=1)
-        st.write("### Uploaded Data Preview:")
-        st.dataframe(df)
-        st.markdown("### Aqui estará o processamento específico do Relatório Geral...")
+    if "pdf_files" not in st.session_state:
+        st.session_state.pdf_files = []
 
-    if st.button("### Voltar para a Página Inicial"):
+    uploaded_pdfs = st.file_uploader(
+        "Adicione um ou mais arquivos PDF", type=["pdf"], accept_multiple_files=True, key="pdf_file_uploader"
+    )
+
+    if uploaded_pdfs:
+        for uploaded_pdf in uploaded_pdfs:
+            if uploaded_pdf.name not in [file["name"] for file in st.session_state.pdf_files]:
+                st.session_state.pdf_files.append({"name": uploaded_pdf.name, "data": uploaded_pdf.getvalue()})
+                st.success(f"Arquivo '{uploaded_pdf.name}' adicionado com sucesso!")
+            else:
+                st.warning(f"O arquivo '{uploaded_pdf.name}' já foi adicionado.")
+
+    if st.session_state.pdf_files:
+        st.markdown("### Arquivos PDF adicionados:")
+        files_to_keep = []
+        for idx, pdf_file in enumerate(st.session_state.pdf_files):
+            col1, col2 = st.columns([8, 1])
+            with col1:
+                st.write(f"{idx + 1}. {pdf_file['name']}")
+            with col2:
+                delete = st.button(f"🗑️ Excluir", key=f"delete_{pdf_file['name']}_{idx}")
+                if not delete:
+                    files_to_keep.append(pdf_file)
+        st.session_state.pdf_files = files_to_keep
+
+    if st.button("Gerar Relatório"):
+        if not st.session_state.pdf_files:
+            st.warning("Nenhum arquivo PDF foi adicionado para análise.")
+        else:
+            total_labor = 0
+            total_after = 0
+            total_lucro = 0
+            report_rows = []
+
+            st.markdown("### Relatório Consolidado")
+            for pdf_file in st.session_state.pdf_files:
+                # Verificar se o arquivo é PM0
+                is_pm0 = "PM0" in pdf_file["name"].upper()
+
+                # Extrair tabelas
+                labor_df = extract_table_with_column(pdf_file["data"], "Labor")
+                total_after_df = extract_table_with_column(pdf_file["data"], "TOTAL after %")
+
+                if labor_df is not None and total_after_df is not None:
+                    # Calcular os totais
+                    labor_sum, after_sum, lucro_sum = calculate_totals(labor_df, total_after_df, is_pm0)
+                    total_labor += labor_sum
+                    total_after += after_sum
+                    total_lucro += lucro_sum
+
+                    # Adicionar linhas ao relatório
+                    report_rows.append([
+                        pdf_file["name"][:3],  # Pegue os 3 primeiros caracteres do nome do arquivo
+                        labor_sum,
+                        after_sum,
+                        lucro_sum
+                    ])
+                else:
+                    st.warning(f"Não foi possível encontrar as tabelas necessárias no arquivo {pdf_file['name']}.")
+
+            # Exibir os totais consolidados na interface
+            st.write(f"**Total Geral Labor:** ${total_labor:,.2f}")
+            st.write(f"**Total Geral TOTAL after %:** ${total_after:,.2f}")
+            st.write(f"**Lucro Geral:** ${total_lucro:,.2f}")
+
+            # Gerar PDF
+            pdf = PDFReport()
+            pdf.add_page()
+
+            # Adicionar a tabela detalhada
+            pdf.add_table(["Installer", "Labor", "TOTAL after %", "Lucro"], report_rows)
+
+            # Adicionar os totais gerais
+            pdf.add_totals([["Labor", f"${total_labor:,.2f}"],
+                            ["TOTAL after %", f"${total_after:,.2f}"],
+                            ["Lucro", f"${total_lucro:,.2f}"]])
+
+            pdf_output = pdf.output(dest="S").encode("latin1")
+
+            st.download_button(
+                label="Baixar Relatório em PDF",
+                data=pdf_output,
+                file_name=f"Relatorio_Semanal_{datetime.now().strftime('%d_%m_%Y')}.pdf",
+                mime="application/pdf",
+            )
+
+    if st.button("Voltar para a Página Inicial"):
         st.session_state.page = "homepage"
+
 
 
 # Função para o Labor Bill
